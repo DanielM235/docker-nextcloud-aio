@@ -1,0 +1,140 @@
+# Production Docker Compose for Nextcloud AIO (All-in-One)
+#
+# Usage:
+#   cp .env.example .env
+#   docker compose up -d
+#
+# Architecture note:
+#   Nextcloud AIO is orchestrated by a single "mastercontainer" that
+#   talks to the Docker socket and creates / manages all the other
+#   containers (Nextcloud, Apache proxy, PostgreSQL, Redis, …) itself.
+#   This Compose file therefore defines only that one service.
+#
+#   TLS is terminated by the system-level nginx reverse proxy on the
+#   host (see nginx/ and docs/REVERSE_PROXY.md), which forwards HTTPS
+#   to the AIO Apache container published on APACHE_PORT.
+#
+# Upstream constraints (NOT changeable — see docs/SECURITY_AUDIT.md):
+#   - container_name must be "nextcloud-aio-mastercontainer"
+#   - the config volume must be named "nextcloud_aio_mastercontainer"
+#     and mounted at /mnt/docker-aio-config
+#   - the image uses rolling channel tags (latest / beta / develop),
+#     not immutable semantic versions
+
+name: ${COMPOSE_PROJECT_NAME:-nextcloud-aio}
+
+services:
+
+  # ----------------------------------------------------------
+  # nextcloud-aio-mastercontainer — orchestration container
+  #
+  # Runs the AIO web interface (self-signed HTTPS on :8080) and
+  # creates/manages the sibling containers via the Docker socket.
+  # Only the AIO interface port is published here; the Nextcloud
+  # Apache container (created by this one) publishes APACHE_PORT on
+  # the host, which is what nginx proxies to.
+  # ----------------------------------------------------------
+  nextcloud-aio-mastercontainer:
+    image: ${AIO_IMAGE_REGISTRY:-ghcr.io/nextcloud-releases}/all-in-one:${AIO_IMAGE_TAG:-latest}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    # Fixed by upstream — do not change (AIO self-update relies on it).
+    container_name: nextcloud-aio-mastercontainer
+    init: true
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+    # The mastercontainer itself runs on the default bridge network,
+    # exactly as upstream ships it.  Its sibling containers are placed
+    # on a separate auto-created "nextcloud-aio" network by the
+    # mastercontainer itself.
+    network_mode: bridge
+
+    ports:
+      # AIO web interface (self-signed).  Bound to loopback by default;
+      # reach it via an SSH tunnel or through your reverse proxy.
+      - "${AIO_INTERFACE_BIND_HOST:-127.0.0.1}:${AIO_INTERFACE_PORT:-8080}:8080"
+      # Ports 80 and 8443 are intentionally NOT published: we run
+      # behind the system nginx reverse proxy (see docs/REVERSE_PROXY.md).
+
+    volumes:
+      # Fixed name + mount point required by upstream — the built-in
+      # backup solution depends on it.
+      - nextcloud_aio_mastercontainer:/mnt/docker-aio-config
+      # Read-only Docker socket so the mastercontainer can orchestrate
+      # the sibling containers.
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+
+    environment:
+      # --- Reverse proxy / networking (docs/REVERSE_PROXY.md) -------
+      APACHE_PORT: ${APACHE_PORT:-11000}
+      APACHE_IP_BINDING: ${APACHE_IP_BINDING:-127.0.0.1}
+      APACHE_ADDITIONAL_NETWORK: ${APACHE_ADDITIONAL_NETWORK:-}
+      SKIP_DOMAIN_VALIDATION: ${SKIP_DOMAIN_VALIDATION:-false}
+      # --- Backup (built-in Borg) -----------------------------------
+      AIO_DISABLE_BACKUP_SECTION: ${AIO_DISABLE_BACKUP_SECTION:-false}
+      BORG_RETENTION_POLICY: ${BORG_RETENTION_POLICY:-}
+      # --- Logging / diagnostics ------------------------------------
+      AIO_LOG_LEVEL: ${AIO_LOG_LEVEL:-warn}
+      COLLABORA_SECCOMP_DISABLED: ${COLLABORA_SECCOMP_DISABLED:-false}
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-}
+      FULLTEXTSEARCH_JAVA_OPTIONS: ${FULLTEXTSEARCH_JAVA_OPTIONS:-}
+      # --- Nextcloud tuning -----------------------------------------
+      NEXTCLOUD_DATADIR: ${NEXTCLOUD_DATADIR:-}
+      NEXTCLOUD_MOUNT: ${NEXTCLOUD_MOUNT:-}
+      NEXTCLOUD_UPLOAD_LIMIT: ${NEXTCLOUD_UPLOAD_LIMIT:-16G}
+      NEXTCLOUD_MAX_TIME: ${NEXTCLOUD_MAX_TIME:-3600}
+      NEXTCLOUD_MEMORY_LIMIT: ${NEXTCLOUD_MEMORY_LIMIT:-512M}
+      NEXTCLOUD_STARTUP_APPS: ${NEXTCLOUD_STARTUP_APPS:-}
+      NEXTCLOUD_ADDITIONAL_APKS: ${NEXTCLOUD_ADDITIONAL_APKS:-imagemagick}
+      NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS: ${NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS:-imagick}
+      NEXTCLOUD_KEEP_DISABLED_APPS: ${NEXTCLOUD_KEEP_DISABLED_APPS:-false}
+      NEXTCLOUD_TRUSTED_CACERTS_DIR: ${NEXTCLOUD_TRUSTED_CACERTS_DIR:-}
+      NEXTCLOUD_ENABLE_NVIDIA_GPU: ${NEXTCLOUD_ENABLE_NVIDIA_GPU:-false}
+      # --- Talk ------------------------------------------------------
+      TALK_PORT: ${TALK_PORT:-3478}
+      # --- Self-update ----------------------------------------------
+      WATCHTOWER_DOCKER_SOCKET_PATH: ${WATCHTOWER_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+
+    # --- Hardening ---------------------------------------------------
+    # The mastercontainer is a privileged orchestrator: it must drive
+    # the Docker daemon through the socket and serve the AIO web UI.
+    # A full `cap_drop: [ALL]` breaks it — its entrypoint needs
+    # DAC_OVERRIDE (and friends) to fix the docker.sock permissions and
+    # chown its directories (verified against the actual image).  We
+    # therefore keep the default capability set and only add
+    # no-new-privileges.  See docs/SECURITY_AUDIT.md for the rationale.
+    security_opt:
+      - no-new-privileges:true
+
+    # --- Healthcheck -------------------------------------------------
+    # The AIO interface is HTTPS-only with a self-signed certificate,
+    # so the probe must ignore certificate validation.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -skf https://127.0.0.1:8080/ >/dev/null 2>&1 || wget -qO- --no-check-certificate https://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+    # --- Resource limits ---------------------------------------------
+    deploy:
+      resources:
+        limits:
+          cpus: "${AIO_CPU_LIMIT:-1.0}"
+          memory: ${AIO_MEM_LIMIT:-1g}
+          pids: ${AIO_PIDS_LIMIT:-256}
+
+    # --- Logging -----------------------------------------------------
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
+
+# ----------------------------------------------------------------
+# Named volumes
+# The mastercontainer volume name is fixed by upstream and must not
+# be changed (the built-in backup solution depends on it).
+# ----------------------------------------------------------------
+volumes:
+  nextcloud_aio_mastercontainer:
+    name: nextcloud_aio_mastercontainer

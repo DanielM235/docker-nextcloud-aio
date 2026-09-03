@@ -1,0 +1,118 @@
+# Nextcloud AIO server block — main Nextcloud vhost
+#
+# Variables (expanded at runtime via envsubst):
+#   ${NGINX_SERVER_NAME}  — domain served (e.g. nextcloud.example.com)
+#   ${NGINX_APACHE_PORT}  — host port of AIO's Apache container (APACHE_PORT)
+#   ${NGINX_SSL_CERT}     — fullchain certificate path
+#   ${NGINX_SSL_KEY}      — private key path
+#   ${NGINX_DHPARAM}      — dhparam file (e.g. /etc/nginx/dhparam)
+#
+# Adapted from the official Nextcloud AIO reverse-proxy documentation:
+#   https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md
+#
+# Production installation on Debian 12 / Ubuntu 24.04:
+#   1. Render this template:
+#        export NGINX_SERVER_NAME=nextcloud.example.com
+#        export NGINX_APACHE_PORT=11000
+#        export NGINX_SSL_CERT=/etc/letsencrypt/live/nextcloud.example.com/fullchain.pem
+#        export NGINX_SSL_KEY=/etc/letsencrypt/live/nextcloud.example.com/privkey.pem
+#        export NGINX_DHPARAM=/etc/nginx/dhparam
+#        envsubst '${NGINX_SERVER_NAME} ${NGINX_APACHE_PORT} ${NGINX_SSL_CERT} ${NGINX_SSL_KEY} ${NGINX_DHPARAM}' \
+#          < nginx/templates/nextcloud.conf.template \
+#          > /etc/nginx/sites-available/nextcloud
+#   2. Enable the site and reload nginx:
+#        sudo ln -sf /etc/nginx/sites-available/nextcloud /etc/nginx/sites-enabled/nextcloud
+#        sudo nginx -t && sudo systemctl reload nginx
+#
+# Test container:
+#   The nginx official image picks up *.template files from
+#   /etc/nginx/templates/ and renders them automatically.
+
+# Map HTTP Upgrade → Connection header for WebSocket proxying
+# (Nextcloud Talk, notifications).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;            # comment to disable IPv6
+
+    if ($scheme = "http") {
+        return 301 https://$host$request_uri;
+    }
+    if ($http_x_forwarded_proto = "http") {
+        return 301 https://$host$request_uri;
+    }
+
+    listen 443 ssl http2;      # for nginx versions below v1.25.1
+    listen [::]:443 ssl http2; # for nginx versions below v1.25.1 — comment to disable IPv6
+    # listen 443 ssl;          # for nginx v1.25.1+
+    # listen [::]:443 ssl;     # for nginx v1.25.1+ — keep comment to disable IPv6
+    # http2 on;                # uncomment to enable HTTP/2 on nginx v1.25.1+
+
+    server_name ${NGINX_SERVER_NAME};
+
+    # -------------------------------------------------------
+    # Buffering / upload size
+    # -------------------------------------------------------
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 0;
+    client_body_buffer_size 512k;
+
+    # -------------------------------------------------------
+    # Timeouts
+    #
+    # 10s above AIO's NEXTCLOUD_MAX_TIME (3600s) so that Nextcloud
+    # times out before nginx.  If you increase NEXTCLOUD_MAX_TIME,
+    # increase this accordingly.
+    # -------------------------------------------------------
+    proxy_read_timeout 3610s;
+
+    # -------------------------------------------------------
+    # TLS
+    # -------------------------------------------------------
+    ssl_certificate     ${NGINX_SSL_CERT};
+    ssl_certificate_key ${NGINX_SSL_KEY};
+    ssl_dhparam         ${NGINX_DHPARAM};
+
+    ssl_early_data on;
+    ssl_session_timeout  1d;
+    ssl_session_cache    shared:SSL:10m;
+    ssl_session_tickets  off;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ecdh_curve x25519:x448:secp521r1:secp384r1:secp256r1;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256;
+
+    # -------------------------------------------------------
+    # Security headers
+    # -------------------------------------------------------
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options        "SAMEORIGIN" always;
+    add_header Referrer-Policy        "no-referrer-when-downgrade" always;
+
+    # -------------------------------------------------------
+    # Proxy to AIO's Apache container
+    # -------------------------------------------------------
+    location / {
+        proxy_pass http://127.0.0.1:${NGINX_APACHE_PORT}$request_uri;
+
+        proxy_set_header X-Forwarded-Host   $host;
+        proxy_set_header X-Forwarded-For    $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Port   $server_port;
+        proxy_set_header X-Forwarded-Scheme $scheme;
+        proxy_set_header X-Forwarded-Proto  $scheme;
+        proxy_set_header X-Real-IP          $remote_addr;
+        proxy_set_header Host               $host;
+        proxy_set_header Early-Data         $ssl_early_data;
+
+        # WebSocket
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}

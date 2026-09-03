@@ -1,0 +1,46 @@
+# Environment files (contain site-specific values — never commit)
+# .env.example IS committed (it is the safe public template)
+.env
+.env.local
+.env.*.local
+
+# Docker Compose override / local config
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Build artifacts and local test data
+build/
+dist/
+tmp/
+logs/
+*.log
+
+# Docker-related
+.docker/
+
+# Backups produced by ./setup.sh backup
+backups/
+
+# Volumes (if you mount project subfolders for persistence)
+data/
+volumes/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
