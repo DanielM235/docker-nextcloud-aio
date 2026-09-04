@@ -17,8 +17,9 @@ class TestInstall:
         run_setup(workspace, "install")
         text = (workspace / ".env").read_text()
         assert "CHANGE_ME" not in text
-        root = env_value(workspace, "MYSQL_ROOT_PASSWORD")
-        assert root and re.fullmatch(r"[0-9a-f]{48}", root), "root password must be generated"
+        for key in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "REDIS_HOST_PASSWORD"):
+            value = env_value(workspace, key)
+            assert value and re.fullmatch(r"[0-9a-f]{48}", value), f"{key} must be generated"
 
     def test_install_domain_override(self, workspace):
         run_setup(workspace, "install", "--domain", "cloud.example.com")

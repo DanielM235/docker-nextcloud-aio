@@ -45,10 +45,23 @@ class TestServices:
         for name, svc in compose["services"].items():
             assert "latest" not in svc["image"], f"{name} image must be pinned"
 
+    def test_redis_requirepass(self, compose):
+        command = compose["services"]["redis"]["command"]
+        assert "--requirepass" in command, "redis must enforce a password"
+
+    def test_app_has_redis_password(self, compose):
+        env = compose["services"]["app"].get("environment", {})
+        assert "REDIS_HOST_PASSWORD" in env, "app must receive REDIS_HOST_PASSWORD"
+
 
 class TestHardening:
     def test_cap_drop_all(self, compose):
+        # `app` intentionally keeps default capabilities (the image entrypoint
+        # needs them for the first-boot rsync); see docs/SECURITY.md.
         for name, svc in compose["services"].items():
+            if name == "app":
+                assert "cap_drop" not in svc, "app must NOT drop capabilities"
+                continue
             assert "ALL" in svc.get("cap_drop", []), f"{name} must drop all capabilities"
 
     def test_no_new_privileges(self, compose):

@@ -70,7 +70,21 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}-redis
     # Run directly as the redis user (same hardening pattern as the AIO stack).
     user: redis
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1", "--loglevel", "warning"]
+    # requirepass protects the cache even from other containers on the
+    # internal network; REDISCLI_AUTH lets the healthcheck authenticate.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+      - --requirepass
+      - ${REDIS_HOST_PASSWORD}
+    environment:
+      REDISCLI_AUTH: ${REDIS_HOST_PASSWORD}
     volumes:
       - redis:/data
     networks:
@@ -116,6 +130,7 @@ services:
       MYSQL_USER: ${MYSQL_USER:-nextcloud}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_HOST_PASSWORD: ${REDIS_HOST_PASSWORD}
       NEXTCLOUD_TRUSTED_DOMAINS: ${DOMAIN_NAME:-nextcloud.example.com}
       NEXTCLOUD_DATA_DIR: /mnt/ncdata
       # TLS is terminated at nginx; always report https to clients.

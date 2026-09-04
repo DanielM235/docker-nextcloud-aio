@@ -66,8 +66,9 @@ init_env() {
 
   set_env_value "MYSQL_ROOT_PASSWORD" "$(generate_secret 24)"
   set_env_value "MYSQL_PASSWORD" "$(generate_secret 24)"
+  set_env_value "REDIS_HOST_PASSWORD" "$(generate_secret 24)"
   chmod 600 "$ENV_FILE"
-  warn "Database secrets generated and written to .env (chmod 600)."
+  warn "Database and Redis secrets generated and written to .env (chmod 600)."
   warn "Review .env and set DOMAIN_NAME before starting."
 }
 

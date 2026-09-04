@@ -15,6 +15,11 @@ This configuration favours security while keeping full Nextcloud functionality.
 | Log rotation | ✓ | ✓ | ✓ | ✓ |
 | Healthcheck | ✓ | ✓ | ✓ | — |
 
+Redis is additionally protected with `requirepass` (`REDIS_HOST_PASSWORD`):
+even a process that reaches the internal Docker network cannot read or write
+the cache without the password. Nextcloud receives the same password through
+its `REDIS_HOST_PASSWORD` environment variable.
+
 ## Why the `app` container keeps default capabilities
 
 The official image's entrypoint runs as root on first boot to **rsync** the
