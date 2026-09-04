@@ -1,7 +1,21 @@
-# Changelog — nextcloud-aio
+# Changelog — nextcloud-docker
 
 All notable changes to this configuration wrapper are documented here.
 This file is used to generate commit messages when merging feature branches.
+
+## [2.0.0] — 2026-09-03
+
+### Changed
+- Split the repository into two self-contained configurations:
+  - `aio/` — the Nextcloud AIO configuration (moved from the repo root).
+  - `vanilla/` — a new stack built on the official `nextcloud` image +
+    MariaDB + Redis, with no Docker socket access.
+
+### Added
+- `vanilla/` config: compose, `.env.example`, nginx template, `setup.sh`
+  (`install` / `start` / `backup` / `restore` / `update` / `occ`), docs and a
+  light test suite.
+- `docs/HOST_SECURITY.md` — host hardening guide (nftables, fail2ban, SSH).
 
 ## [1.0.0] — 2026-09-03
 

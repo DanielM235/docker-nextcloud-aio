@@ -1,19 +1,23 @@
-# GitHub Copilot Instructions — nextcloud-aio
+# GitHub Copilot Instructions — nextcloud-docker
 
 ## Project purpose
 
-This repository defines and tests a **robust production Docker Compose
-configuration** for the **Nextcloud AIO (All-in-One)** self-hosted
-application (<https://github.com/nextcloud/all-in-one>).
+This repository hosts **two production Docker Compose configurations** for
+self-hosted Nextcloud, both targeting a **Debian 12 / Ubuntu 24.04** server
+where **nginx is already installed at the OS level** as the central reverse
+proxy and TLS terminator for many applications:
 
-The production target is a **Debian 12 / Ubuntu 24.04** server where **nginx is
-already installed at the OS level** and acts as the central reverse proxy for
-many applications. TLS is terminated by that nginx.
+- **`aio/`** — Nextcloud **AIO** (All-in-One, `nextcloud/all-in-one`). A single
+  privileged mastercontainer orchestrates the stack via the Docker socket.
+  See `aio/README.md`.
+- **`vanilla/`** — a **vanilla** stack built on the official `nextcloud` image
+  + MariaDB + Redis, with **no Docker socket access** and non-root services.
+  See `vanilla/README.md`.
 
 Reference docs:
-- Architecture: <https://github.com/nextcloud/all-in-one#architecture-overview>
-- Reverse proxy: <https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md>
-- Environment variables: <https://github.com/nextcloud/all-in-one/blob/main/compose.yaml>
+- AIO architecture: <https://github.com/nextcloud/all-in-one#architecture-overview>
+- AIO reverse proxy: <https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md>
+- Official Nextcloud image: <https://github.com/nextcloud/docker>
 
 ---
 
@@ -73,6 +77,21 @@ Reference docs:
 
     If upstream ever adds a supported non-root mode, add `user:` to the
     service and update `docs/SECURITY_AUDIT.md`.
+
+---
+
+## Vanilla configuration (`vanilla/`)
+
+- Pin the Nextcloud image (`NEXTCLOUD_IMAGE_TAG`, e.g. `34.0.3-apache`),
+  MariaDB LTS and Redis — never `latest`. Upgrade Nextcloud **one major
+  version at a time** (`vanilla/docs/UPDATE.md`).
+- **No Docker socket** in any vanilla container; only `app` publishes a port
+  (loopback-bound).
+- Run services non-root (`db` → `mysql`, `redis` → `redis`, `cron` →
+  `www-data`; do not override the `app` user) and apply `cap_drop: [ALL]` +
+  `no-new-privileges:true`.
+- Backups via `setup.sh backup` (mariadb-dump + data dir + config volume).
+- Data on an external disk via the `NEXTCLOUD_DATA_DIR` bind mount.
 
 ---
 

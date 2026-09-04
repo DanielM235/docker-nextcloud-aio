@@ -1,0 +1,222 @@
+# Production Docker Compose for a "vanilla" Nextcloud (official image)
+#
+# This is the alternative to the AIO configuration (../aio).  It is built on
+# the official `nextcloud` image + MariaDB + Redis.  No Docker socket is
+# mounted into any container and there is no privileged mastercontainer.
+#
+# TLS is terminated by the system-level nginx reverse proxy on the host (see
+# nginx/), which forwards HTTPS to the app container published on
+# APP_HTTP_PORT (loopback by default).
+#
+# Services: db (MariaDB), redis, app (Nextcloud apache), cron (background jobs).
+# All inter-service traffic stays on the internal user-defined network.
+
+name: ${COMPOSE_PROJECT_NAME:-nextcloud-vanilla}
+
+services:
+
+  # ----------------------------------------------------------
+  # db — MariaDB (LTS)
+  # ----------------------------------------------------------
+  db:
+    image: mariadb:${MARIADB_IMAGE_TAG:-11.4}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-db
+    # Run directly as the mysql user so cap_drop:ALL does not block the
+    # first-boot datadir initialisation (a fresh named volume inherits the
+    # image's /var/lib/mysql ownership).
+    user: mysql
+    command:
+      - --transaction-isolation=READ-COMMITTED
+      - --binlog-format=ROW
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nextcloud}
+      MYSQL_USER: ${MYSQL_USER:-nextcloud}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - db:/var/lib/mysql
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${DB_CPU_LIMIT:-2.0}"
+          memory: ${DB_MEM_LIMIT:-1g}
+          pids: 256
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  # ----------------------------------------------------------
+  # redis — in-memory cache + file locking
+  # ----------------------------------------------------------
+  redis:
+    image: redis:${REDIS_IMAGE_TAG:-7-alpine}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    # Run directly as the redis user (same hardening pattern as the AIO stack).
+    user: redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis:/data
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT:-0.5}"
+          memory: ${REDIS_MEM_LIMIT:-256m}
+          pids: 128
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  # ----------------------------------------------------------
+  # app — Nextcloud (apache variant)
+  #
+  # The image drops privileges to www-data internally for PHP; we do not
+  # override the user and do not use --privileged.  Only this service
+  # publishes a port (loopback) for the host nginx.
+  # ----------------------------------------------------------
+  app:
+    image: nextcloud:${NEXTCLOUD_IMAGE_TAG:-34.0.3-apache}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-app
+    ports:
+      - "127.0.0.1:${APP_HTTP_PORT:-8080}:80"
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nextcloud}
+      MYSQL_USER: ${MYSQL_USER:-nextcloud}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${DOMAIN_NAME:-nextcloud.example.com}
+      NEXTCLOUD_DATA_DIR: /mnt/ncdata
+      # TLS is terminated at nginx; always report https to clients.
+      OVERWRITEPROTOCOL: https
+      OVERWRITECLIURL: ${OVERWRITECLIURL:-https://nextcloud.example.com}
+      # Optional auto-install (set both to skip the web wizard).
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:-}
+      # PHP / upload tuning
+      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+      PHP_UPLOAD_LIMIT: ${PHP_UPLOAD_LIMIT:-16G}
+      APACHE_BODY_LIMIT: ${APACHE_BODY_LIMIT:-0}
+    volumes:
+      - nextcloud:/var/www/html
+      # Data on an external disk (bind mount).  The image chowns this to
+      # www-data (uid 33) on first run.
+      - ${NEXTCLOUD_DATA_DIR:-/mnt/nextcloud-data}:/mnt/ncdata
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    # The entrypoint runs as root on first boot to rsync the Nextcloud source
+    # into the volume and chown it.  A full cap_drop: ALL breaks that rsync
+    # (verified).  We keep the default capability set and no --privileged.
+    # See docs/SECURITY.md for the rationale.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:80/status.php >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "${APP_CPU_LIMIT:-2.0}"
+          memory: ${APP_MEM_LIMIT:-1g}
+          pids: 256
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  # ----------------------------------------------------------
+  # cron — background jobs (shares the app volumes)
+  # ----------------------------------------------------------
+  cron:
+    image: nextcloud:${NEXTCLOUD_IMAGE_TAG:-34.0.3-apache}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-cron
+    entrypoint: /cron.sh
+    # Run the cron loop as www-data so it does not create root-owned files.
+    user: www-data
+    volumes:
+      - nextcloud:/var/www/html
+      - ${NEXTCLOUD_DATA_DIR:-/mnt/nextcloud-data}:/mnt/ncdata
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "${CRON_CPU_LIMIT:-0.5}"
+          memory: ${CRON_MEM_LIMIT:-512m}
+          pids: 128
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+# ----------------------------------------------------------------
+# Named volumes — prefixed by COMPOSE_PROJECT_NAME
+# ----------------------------------------------------------------
+volumes:
+  db:
+    name: ${COMPOSE_PROJECT_NAME:-nextcloud-vanilla}-db
+  redis:
+    name: ${COMPOSE_PROJECT_NAME:-nextcloud-vanilla}-redis
+  nextcloud:
+    name: ${COMPOSE_PROJECT_NAME:-nextcloud-vanilla}-nextcloud
+
+# ----------------------------------------------------------------
+# Networks — internal only; nothing is exposed to the host network
+# ----------------------------------------------------------------
+networks:
+  internal:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-nextcloud-vanilla}-internal

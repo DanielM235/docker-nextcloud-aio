@@ -105,7 +105,6 @@ class TestDocs:
             "SECURITY_AUDIT",
             "TROUBLESHOOTING",
             "REVERSE_PROXY",
-            "AGENT_CONFIGURATION",
             "NETWORKING",
         ):
             assert (Path("/project/docs") / f"{name}.md").exists(), f"missing docs/{name}.md"

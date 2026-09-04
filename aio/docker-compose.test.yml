@@ -82,6 +82,7 @@ services:
     network_mode: host
     volumes:
       - ./:/project:ro
+      - ../:/repo:ro
       # Read-only: the tests only inspect container state via the Docker SDK.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
